@@ -42,9 +42,9 @@ Please configure your management console secrets to unlock cloud AI processing.
     
     prompt += "\nProvide a 3-paragraph executive analysis summarizing overall performance, category insights, and a concrete strategic recommendation."
 
-    # 3. Requesting generation from the Cloud API
+    # 3. Requesting generation from the active Cloud API model
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
