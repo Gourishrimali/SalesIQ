@@ -5,6 +5,6 @@ plotly
 scikit-learn
 matplotlib
 seaborn
-google-genai
+google-generativeai
 reportlab
 
