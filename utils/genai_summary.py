@@ -1,84 +1,90 @@
-from google import genai
+import json
+import requests
 
-
-def create_sales_context(df):
-    total_sales = df["Sales"].sum()
-    total_orders = len(df)
-    average_sales = df["Sales"].mean()
-
-    context = []
-    context.append(f"Total orders: {total_orders}")
-    context.append(f"Total sales revenue: ${total_sales:,.2f}")
-    context.append(f"Average sales per order: ${average_sales:,.2f}")
-
-    if "Profit" in df.columns:
-        total_profit = df["Profit"].sum()
-        profit_margin = total_profit / total_sales if total_sales > 0 else 0
-        context.append(f"Total profit: ${total_profit:,.2f}")
-        context.append(f"Profit margin: {profit_margin * 100:.2f}%")
-
-    if "Category" in df.columns:
-        category_sales = df.groupby("Category")["Sales"].sum().sort_values(ascending=False)
-        context.append(f"Best category: {category_sales.index[0]}")
-        context.append(f"Best category sales: ${category_sales.iloc[0]:,.2f}")
-
-    if "Region" in df.columns:
-        region_sales = df.groupby("Region")["Sales"].sum().sort_values(ascending=False)
-        context.append(f"Best region: {region_sales.index[0]}")
-        context.append(f"Best region sales: ${region_sales.iloc[0]:,.2f}")
-
-    if "Product Name" in df.columns:
-        product_sales = df.groupby("Product Name")["Sales"].sum().sort_values(ascending=False)
-        context.append(f"Best product: {product_sales.index[0]}")
-        context.append(f"Best product sales: ${product_sales.iloc[0]:,.2f}")
-
-    return "\n".join(context)
-
-
-def generate_business_summary(df, api_key=None):
-    context = create_sales_context(df)
-
-    if not api_key:
-        return (
-            "Gemini API key not found.\n\n"
-            "Please add GEMINI_API_KEY in .streamlit/secrets.toml.\n\n"
-            f"Sales Context:\n{context}"
-        )
-
-    client = genai.Client(api_key=api_key)
-
+def generate_business_summary(metrics_dict, anomalies_df=None):
+    """
+    Takes structural analytics inputs and feeds them to a local instance
+    of Ollama via a streaming HTTP request to bypass deep-thinking timeouts.
+    """
+    
+    # 1. Structural prompt generation
     prompt = f"""
-You are a professional business analyst.
+    Analyze the following corporate sales metrics and generate a concise executive summary report.
+    Use clear headers, bullet points, and highlight areas of strength or concern.
 
-Analyze the following sales data summary and write a clear business report.
+    Core Metrics:
+    - Total Sales Revenue: {metrics_dict.get('total_sales', 'N/A')}
+    - Total Orders Processed: {metrics_dict.get('total_orders', 'N/A')}
+    - Net Accrued Profit: {metrics_dict.get('total_profit', 'N/A')}
+    - Operational Profit Margin: {metrics_dict.get('profit_margin', 'N/A')}
+    - Average Order Value (AOV): {metrics_dict.get('aov', 'N/A')}
+    - Leading Product Category: {metrics_dict.get('best_category', 'N/A')}
+    - Strongest Operational Region: {metrics_dict.get('best_region', 'N/A')}
+    - MVP Top Performing Product SKU: {metrics_dict.get('best_product', 'N/A')}
+    """
 
-Sales data summary:
-{context}
+    if anomalies_df is not None and not anomalies_df.empty:
+        try:
+            anomalies_list = anomalies_df.tail(3).to_dict(orient="records")
+            prompt += f"\nCritical Outliers & Anomalies Flagged in Data Matrix:\n{anomalies_list}\n"
+        except Exception:
+            pass
+    
+    prompt += "\nProvide a 3-paragraph executive analysis summarizing overall performance, category insights, and a concrete strategic recommendation."
 
-Start the report with this exact line:
-"Generated using Google Gemini AI for SalesIQ."
-
-Write the report with:
-1. Overall sales performance
-2. Profitability analysis
-3. Best-performing category, region, and product
-4. Risks or concerns
-5. Recommended business actions
-
-Keep the report practical, professional, and easy to understand.
-"""
+    # 2. Direct HTTP call to Ollama endpoint
+    url = "http://127.0.0.1:11434/api/chat"
+    payload = {
+        "model": "qwen3:4b",
+        "messages": [
+            {
+                "role": "system", 
+                "content": "You are an advanced, data-driven executive business intelligence analyst. Provide your response directly without thinking tags."
+            },
+            {
+                "role": "user", 
+                "content": prompt
+            }
+        ],
+        "options": {
+            "temperature": 0.1
+        },
+        "stream": True # Streaming keeps the network connection alive and kicking!
+    }
 
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
+        # Activating a streaming response loop 
+        response = requests.post(url, json=payload, stream=True, timeout=120.0)
+        
+        if response.status_code == 200:
+            full_response_text = ""
+            # Read incoming data line by line as Ollama generates it
+            for line in response.iter_lines():
+                if line:
+                    decoded_line = json.loads(line.decode('utf-8'))
+                    # Append text chunk
+                    if 'message' in decoded_line and 'content' in decoded_line['message']:
+                        full_response_text += decoded_line['message']['content']
+            
+            if full_response_text.strip():
+                return full_response_text
+            else:
+                raise Exception("Ollama connected successfully but returned an empty text payload.")
+        else:
+            raise Exception(f"Ollama server responded with error code {response.status_code}: {response.text}")
 
-        return response.text
+    except Exception as e:
+        error_msg = str(e)
+        return f"""
+### 📋 Local Dashboard Metric Report (Fallback)
 
-    except Exception as error:
-        return (
-            "Error while generating Gemini AI report.\n\n"
-            f"Error details: {error}\n\n"
-            f"Sales Context:\n{context}"
-        )
+* **Revenue Metrics**: Total operations pulled a volume of {metrics_dict.get('total_sales', 'N/A')} across {metrics_dict.get('total_orders', 'N/A')} orders.
+* **Profitability**: Net yield values at {metrics_dict.get('total_profit', 'N/A')} reflecting an active margin of {metrics_dict.get('profit_margin', 'N/A')}.
+* **Top Performers**: Growth was heavily anchored by the {metrics_dict.get('best_category', 'N/A')} category inside the {metrics_dict.get('best_region', 'N/A')} region.
+
+---
+⚠️ **Ollama Connection Debug Info:**
+`{error_msg}`
+
+*(Please verify Ollama is fully responsive in your system tray or terminal.)*
+"""
